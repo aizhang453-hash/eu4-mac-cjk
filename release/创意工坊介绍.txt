@@ -1,0 +1,21 @@
+让苹果电脑 (Mac) 上的 Steam 版《欧陆风云4》能显示中文模组的中文。Windows 上要装的「双字节补丁」(EU4dll) 没有苹果版, 这个就是苹果版。
+
+只支持: 苹果电脑 + Steam 版 + 游戏版本 1.37.5.0。
+
+【安装】
+1. 订阅中文模组「Chinese Language Mod for 1.37」(想要更全的国名人名, 再订阅「Chinese Language Supplementary Mod for 1.37」)。
+2. 订阅本 Mod。在 Paradox 启动器的 Mod 列表里, 点本 Mod 右边的「…」→「在文件夹中显示」。
+3. 先关掉游戏, 双击「安装.command」。
+4. 开游戏, 把中文模组加进游戏套装。本 Mod 不用加进游戏套装。
+
+【卸载】双击同一个文件夹里的「卸载.command」, 再取消订阅。
+
+【注意】
+- Steam 更新游戏或「验证游戏文件完整性」以后要再双击一次「安装.command」。
+- 安装时会把游戏程序备份成 eu4.原版备份, 卸载时换回来。
+- 还不完善的地方: 输入框按住 Shift 选字、复制粘贴; 输入法候选框的位置; 标点偶尔跑到行首。
+
+源代码和更新记录: https://github.com/aizhang453-hash/eu4-mac-cjk
+非官方, 跟 Paradox 和 EU4dll 的作者都没有关系。做法参考了 EU4dll (MIT 许可)。
+
+Chinese (CJK) text patch for the Mac version of EU4 1.37.5 (Steam) - a Mac counterpart of EU4dll. Click "..." > "Show in folder" on this mod in the launcher, then double-click 安装.command (install) / 卸载.command (uninstall).
