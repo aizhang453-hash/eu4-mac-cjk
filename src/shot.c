@@ -44,9 +44,41 @@ static void save_png(const char *path, int w, int h, uint8_t *rgba) {
     CFRelease(url); CFRelease(s); CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs);
 }
 
+// ---- 调试用: 模拟点鼠标 (EU4CJK_CLICKS="秒:x,y;秒:x,y", 秒数从插件加载算起, x,y 是窗口里的点) ----
+typedef int (*send_motion_t)(void *window, uint32_t mouse, int relative, int x, int y);
+typedef int (*send_button_t)(void *window, uint32_t mouse, uint8_t state, uint8_t button);
+static struct { double t; int x, y, done; } clicks[32];
+static int nclicks;
+static double t0;
+
+static void parse_clicks(void) {
+    const char *s = getenv("EU4CJK_CLICKS");
+    while (s && *s && nclicks < 32) {
+        double t; int x, y, n = 0;
+        if (sscanf(s, "%lf:%d,%d%n", &t, &x, &y, &n) != 3) break;
+        clicks[nclicks].t = t; clicks[nclicks].x = x; clicks[nclicks].y = y; nclicks++;
+        s += n;
+        if (*s == ';') s++;
+    }
+}
+
+static void do_clicks(void *window, double t) {
+    send_motion_t motion = (send_motion_t)GAME(0x1012dbb50);    // SDL_SendMouseMotion
+    send_button_t button = (send_button_t)GAME(0x1012dc750);    // SDL_SendMouseButton
+    for (int i = 0; i < nclicks; i++) {
+        if (clicks[i].done || t - t0 < clicks[i].t) continue;
+        clicks[i].done = 1;
+        motion(window, 0, 0, clicks[i].x, clicks[i].y);
+        button(window, 0, 1, 1);    // 按下左键
+        button(window, 0, 0, 1);    // 松开
+        cjk_log("点了 (%d, %d)", clicks[i].x, clicks[i].y);
+    }
+}
+
 static void my_swap(void *window) {
     cjk_tick();
     double t = now_s();
+    do_clicks(window, t);
     if (shot_dir && t - last_shot >= 10.0) {
         last_shot = t;
         int w = 0, h = 0;
@@ -76,6 +108,8 @@ static void my_swap(void *window) {
 
 int shot_install(void) {
     shot_dir = getenv("EU4CJK_SHOTS");
+    t0 = now_s();
+    parse_clicks();
     sdl_drawable_size = (void *)GAME(0x1012ca130);        // _SDL_GL_GetDrawableSize
     uintptr_t site = GAME(0x10135cbd0);                   // _SDL_GL_SwapWindow_REAL
     // 开头 6 字节: push rbp; mov rbp,rsp; push rbx; push rax

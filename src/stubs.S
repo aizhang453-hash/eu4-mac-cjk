@@ -38,7 +38,8 @@ _cjk_parse_stub:
 # seteax: 原来 eax 里是这个字 (就照样放字 / 汉字编号)
 # layout: 排版用 (把汉字当成可以断行的地方: 用高度为 0 的副本字形)
 # extra: 汉字时还要做的事 (把后两个字节也放进单词缓冲区)
-.macro CJK_LOOKUP base, dst, idx, ret, s1, s1d, s2, s2d, seteax, layout, extra
+# off: 字形表在 base 里的位置 (CBitmapFont 是 0xe8; 直接给 CBitmapCharacterSet 的是 0)
+.macro CJK_LOOKUP base, dst, idx, ret, s1, s1d, s2, s2d, seteax, layout, extra, off=0xe8
     movzx   \s2d, byte ptr [\s1]
     sub     \s2d, 0x10
     cmp     \s2d, 3
@@ -47,7 +48,7 @@ _cjk_parse_stub:
     .if \seteax
     mov     eax, \s2d
     .endif
-    mov     \s2, qword ptr [\base + 8*\s2 + 0xe8]
+    mov     \s2, qword ptr [\base + 8*\s2 + \off]
     jmp     89f
 80:
     push    \s2
@@ -73,7 +74,7 @@ _cjk_parse_stub:
     .if \seteax
     mov     eax, \s2d
     .endif
-    mov     \s1, qword ptr [\base + 0x10*8 + 0xe8]
+    mov     \s1, qword ptr [\base + 0x10*8 + \off]
     test    \s1, \s1
     jz      86f
     mov     \s2, qword ptr [\s1 + 8*\s2]
@@ -91,14 +92,14 @@ _cjk_parse_stub:
 .endm
 
 # 普通的一处: 原来是 movzx eax, byte ptr [rax] ; mov dst, [base+8*rax+0xe8]
-.macro SITE_A name, base, dst, idx, layout, pre=
+.macro SITE_A name, base, dst, idx, layout, pre=, off=0xe8
 .globl _\name
 _\name:
     \pre
     push    rsi
     push    rdi
     mov     rsi, rax
-    CJK_LOOKUP \base, \dst, "\idx", _\name\()_ret, rsi, esi, rdi, edi, 1, \layout, " "
+    CJK_LOOKUP \base, \dst, "\idx", _\name\()_ret, rsi, esi, rdi, edi, 1, \layout, " ", \off
 .globl _\name\()_ret
 .data
 _\name\()_ret: .quad 0
@@ -112,6 +113,10 @@ SITE_A cjk_fvb2,   r15, rax, ebx,  0
 SITE_A cjk_gars,   rcx, r12, r13d, 1, "mov rcx, qword ptr [rbp - 0x1128]"
 SITE_A cjk_grs,    r12, rbx, "dword ptr [rbp - 0xb4]", 1
 SITE_A cjk_garrsa, r13, rbx, "dword ptr [rbp - 0xb4]", 1
+# 地图上的名字: 数有几个看得见的字 (两处), 沿着弯曲排字 (CurveText, 直接给的字形表)
+SITE_A cjk_ana,    r14, rax, ebx,  0
+SITE_A cjk_ann,    r14, rax, r13d, 0
+SITE_A cjk_curve,  r12, r15, r14d, 0, " ", 0
 
 # RenderToTexture 排版: 每个字先 "单词 += 这个字", 汉字的后两个字节也要放进去
 .macro RTT1_EXTRA

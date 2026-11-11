@@ -48,6 +48,27 @@ int font_install(void) {
     return hook_jmp(site, 7, (void *)cjk_parse_stub);
 }
 
+// ---- 读图片文件的大小上限: 原来 16MB, 地图用的中文字体图片 (zh-hans-map.dds) 有 49MB 读不进来, 画成白块 ----
+// CTextureHandler::LoadTexture 里两处 cmp ..., 0xffffff 改成 0x3ffffff (64MB, 跟 EU4dll 一样)
+int texture_limit_install(void) {
+    const uint8_t a[] = {0x81, 0xFB, 0xFF, 0xFF, 0xFF, 0x00};          // cmp ebx, 0xffffff
+    const uint8_t b[] = {0x41, 0x81, 0xFC, 0xFF, 0xFF, 0xFF, 0x00};    // cmp r12d, 0xffffff
+    uintptr_t pa = GAME(0x1015d9521), pb = GAME(0x1015d9717);
+    if (!patch_expect(pa, a, sizeof a) || !patch_expect(pb, b, sizeof b)) return -1;
+    if (patch_write(pa + 5, "\x03", 1) || patch_write(pb + 6, "\x03", 1)) return -2;
+    return 0;
+}
+
+// ---- 右上角的日期: 原来 "d w mw w y" (11 11月 1444), 改成 1444年11月11日 (跟 EU4dll 一样) ----
+// 0x0F、0x0E 是中文字体里的「年」「日」(中文模组的字体在这两个位置放了这两个字)
+int date_install(void) {
+    const char old_fmt[] = "d w mw w y";
+    const char new_fmt[] = {'y', ' ', 0x0F, ' ', 'm', 'w', ' ', 'd', ' ', 0x0E, 0};
+    uintptr_t a = GAME(0x101b74ef9);
+    if (!patch_expect(a, old_fmt, sizeof old_fmt)) return -1;
+    return patch_write(a, new_fmt, sizeof new_fmt);
+}
+
 // ---- 读字的地方 (stubs.S 里的 SITE_A 等) ----
 typedef void *(*cstring_add_char_t)(void *self, char c);
 
@@ -60,9 +81,11 @@ void cjk_append2(void *word, const uint8_t *p) {      // 单词 += 汉字的后�
 #define STUB(n) extern void cjk_##n(void); extern uintptr_t cjk_##n##_ret;
 STUB(rtt1) STUB(rtt2) STUB(rts1) STUB(rts2) STUB(gh) STUB(gw)
 STUB(fvb1) STUB(fvb2) STUB(gars) STUB(grs) STUB(garrsa)
+STUB(ana) STUB(ann) STUB(curve)
 extern uintptr_t cjk_ptext;
 
-// kind: 0 = movzx eax,[rax] + 查表; 1 = 只有查表; 2 = mov rcx,r14 + 查表; 3 = movzx + mov rcx,[rbp-0x1128] + 查表
+// kind: 0 = movzx eax,[rax] + 查表; 1 = 只有查表; 2 = mov rcx,r14 + 查表; 3 = movzx + mov rcx,[rbp-0x1128] + 查表;
+//       4 = movzx + mov r15,[r12+8*rax] (CurveText)
 static const struct { const char *name; uintptr_t at; int len, kind; void (*stub)(void); uintptr_t *ret; uintptr_t back; } sites[] = {
     {"RenderToTexture 排版", 0x10146da2b, 11, 0, cjk_rtt1,   &cjk_rtt1_ret,   0x10146da36},
     {"RenderToTexture 画",   0x10146f8f3, 11, 0, cjk_rtt2,   &cjk_rtt2_ret,   0x10146f8fe},
@@ -75,6 +98,9 @@ static const struct { const char *name; uintptr_t at; int len, kind; void (*stub
     {"GetActualRequiredSize",0x101475179, 18, 3, cjk_gars,   &cjk_gars_ret,   0x10147518b},
     {"GetRequiredSize",      0x101475957, 11, 0, cjk_grs,    &cjk_grs_ret,    0x101475962},
     {"GetActualRealRequiredSizeActually", 0x101476267, 11, 0, cjk_garrsa, &cjk_garrsa_ret, 0x101476272},
+    {"地图名字 AddNameArea",   0x100e0d88e, 11, 0, cjk_ana,   &cjk_ana_ret,   0x100e0d899},
+    {"地图名字 AddNudgedNames",0x100e0f438, 11, 0, cjk_ann,   &cjk_ann_ret,   0x100e0f443},
+    {"地图名字 CurveText",     0x100e0e875,  7, 4, cjk_curve, &cjk_curve_ret, 0x100e0e87c},
 };
 
 static int lookup_ok(const uint8_t *p) {    // mov r64, [base + 8*idx + 0xe8]
@@ -93,7 +119,8 @@ int sites_install(void) {
         case 0: ok = !memcmp(p, movzx, 3) && lookup_ok(p + 3); break;
         case 1: ok = lookup_ok(p); break;
         case 2: ok = !memcmp(p, movrcx, 3) && lookup_ok(p + 3); break;
-        default: ok = !memcmp(p, movzx, 3) && !memcmp(p + 3, ldrcx, 7) && lookup_ok(p + 10); break;
+        case 3: ok = !memcmp(p, movzx, 3) && !memcmp(p + 3, ldrcx, 7) && lookup_ok(p + 10); break;
+        default: { const uint8_t ld[] = {0x4D, 0x8B, 0x3C, 0xC4}; ok = !memcmp(p, movzx, 3) && !memcmp(p + 3, ld, 4); break; }
         }
         if (!ok) { cjk_log("对不上, 没改: %s", sites[i].name); bad++; continue; }
         *sites[i].ret = GAME(sites[i].back);
