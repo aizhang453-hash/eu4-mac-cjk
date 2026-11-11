@@ -1,0 +1,15 @@
+#!/bin/sh
+# 带插件开游戏试一下 (用 build/userdir 当存档文件夹, 不动用户自己的)。
+# 用法: tools/run-test.sh [秒数]   到时间自动关游戏 (默认 60 秒)
+cd "$(dirname "$0")/.." || exit 1
+G="$HOME/Library/Application Support/Steam/steamapps/common/Europa Universalis IV"
+SECS=${1:-60}
+rm -f build/eu4cjk.log
+cd "$G" || exit 1
+mkdir -p "$OLDPWD/build/shots"; rm -f "$OLDPWD"/build/shots/*.png
+SteamAppId=236850 SteamGameId=236850 EU4CJK_SHOTS="$OLDPWD/build/shots" DYLD_INSERT_LIBRARIES="$OLDPWD/build/libeu4cjk.dylib" EU4CJK_LOG="$OLDPWD/build/eu4cjk.log" \
+  ./eu4.app/Contents/MacOS/eu4 -userdir="$OLDPWD/build/userdir" > "$OLDPWD/build/stdout.txt" 2>&1 &
+PID=$!
+echo "游戏进程 $PID"
+i=0; while [ $i -lt "$SECS" ] && kill -0 $PID 2>/dev/null; do sleep 1; i=$((i+1)); done
+if kill -0 $PID 2>/dev/null; then kill $PID; sleep 2; kill -9 $PID 2>/dev/null; echo "到时间, 关掉了"; else wait $PID; echo "游戏自己退出了, 返回 $?"; fi
