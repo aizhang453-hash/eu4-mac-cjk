@@ -97,6 +97,26 @@ static void cstr_case(uint8_t *s, int upper) {
 static void my_cstring_toupper(uint8_t *s) { cstr_case(s, 1); }
 static void my_cstring_tolower(uint8_t *s) { cstr_case(s, 0); }
 
+// ---- CString::RemoveSpecialCharacters 整个换掉 ----
+// 原来: 每个 0x80 以上的字节换成长得像的英文字母 (Õ→O 这种, 用游戏自己的对照表 nReplacement), 汉字的后两个字节常在这个范围,
+// 存档名「法兰西1444_11_11」就变成「沃兰444_11_11」。现在汉字 (转义 + 两个字节) 跳过, 别的照原来的做法。
+static void my_remove_special(uint8_t *s) {
+    size_t n; uint8_t *p = cstr_data(s, &n);
+    const uint8_t *table = (const uint8_t *)GAME(0x101bf1810);    // nReplacement, 下标是 字节 ^ 0x80
+    for (size_t i = 0; i < n; ) {
+        uint8_t c = p[i];
+        if (is_esc(c) && i + 2 < n) { i += 3; continue; }
+        if (c >= 0x80) {
+            if (c == 0xD0) p[i] = 'D';
+            else if (c == 0xDE) p[i] = 'T';
+            else if (c == 0xF0) p[i] = 'd';
+            else if (c == 0xFE) p[i] = 't';
+            else p[i] = table[c ^ 0x80];
+        }
+        i++;
+    }
+}
+
 // ---- 地图名字字和字之间插空格 (CGenerateNamesWork::AddNameArea 里): 一个汉字的三个字节当一个整体 ----
 typedef void *(*cstring_add_cstr_t)(void *self, const void *other);
 void cjk_spaced(void *dst, uint8_t *src, void *spaces) {
@@ -137,6 +157,13 @@ int textbuffer_install(void) {
     if (!patch_expect(a, head, 6)) return -1;
     orig_glcs = (glcs_t)hook_tramp(a, 6);
     return (orig_glcs && hook_jmp(a, 6, (void *)my_glcs) == 0) ? 0 : -2;
+}
+
+int remove_special_install(void) {
+    const uint8_t head[] = {0x55, 0x48, 0x89, 0xE5, 0x8A, 0x0F};   // push rbp; mov rbp,rsp; mov cl,[rdi]
+    uintptr_t a = GAME(0x1018671da);                                // CString::RemoveSpecialCharacters
+    if (!patch_expect(a, head, 6)) return -1;
+    return hook_jmp(a, 6, (void *)my_remove_special) ? -2 : 0;
 }
 
 int map_names_install(void) {
