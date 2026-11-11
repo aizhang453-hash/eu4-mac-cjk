@@ -17,6 +17,7 @@ void cjk_tick(void);    // main.c: 定时写日志
 static void (*orig_swap)(void *window);
 static void (*sdl_drawable_size)(void *window, int *w, int *h);
 static const char *shot_dir;
+static double shot_every = 10;      // 每几秒自动截一张 (EU4CJK_SHOT_EVERY, 0 = 只在动作 s 时截)
 static int shot_n;
 static double last_shot;
 
@@ -48,19 +49,33 @@ static void save_png(const char *path, int w, int h, uint8_t *rgba) {
 typedef int (*send_motion_t)(void *window, uint32_t mouse, int relative, int x, int y);
 typedef int (*send_button_t)(void *window, uint32_t mouse, uint8_t state, uint8_t button);
 typedef int (*send_wheel_t)(void *window, uint32_t mouse, float x, float y, int direction);
-static struct { double t; int x, y, wheel, done; } clicks[32];
+typedef int (*send_key_t)(uint8_t state, int scancode);
+typedef void (*set_focus_t)(void *window);
+typedef int (*send_text_t)(const char *text);
+// 动作: 点鼠标 (x,y) / 滚轮 w / 按键 k扫描码 / 打字 t文字 / 马上截图 s
+enum { ACT_CLICK, ACT_WHEEL, ACT_KEY, ACT_TEXT, ACT_SHOT };
+static struct { double t; int kind, x, y, done; char text[64]; } clicks[64];
+static int shot_now;
 static int nclicks;
 static double t0;
 
 static void parse_clicks(void) {
     const char *s = getenv("EU4CJK_CLICKS");
-    while (s && *s && nclicks < 32) {
+    while (s && *s && nclicks < 64) {
         double t; int x, y, n = 0;
+        char buf[64];
         if (sscanf(s, "%lf:w%d%n", &t, &y, &n) == 2) {          // 滚轮
-            clicks[nclicks].t = t; clicks[nclicks].wheel = 1; clicks[nclicks].y = y; nclicks++;
+            clicks[nclicks].kind = ACT_WHEEL; clicks[nclicks].y = y;
+        } else if (sscanf(s, "%lf:k%d%n", &t, &x, &n) == 2) {    // 按键 (SDL 扫描码)
+            clicks[nclicks].kind = ACT_KEY; clicks[nclicks].x = x;
+        } else if (sscanf(s, "%lf:t%63[^;]%n", &t, buf, &n) == 2) {  // 打字
+            clicks[nclicks].kind = ACT_TEXT; snprintf(clicks[nclicks].text, 64, "%s", buf);
+        } else if (sscanf(s, "%lf:s%n", &t, &n) == 1 && n > 0) {      // 马上截图
+            clicks[nclicks].kind = ACT_SHOT;
         } else if (sscanf(s, "%lf:%d,%d%n", &t, &x, &y, &n) == 3) {
-            clicks[nclicks].t = t; clicks[nclicks].x = x; clicks[nclicks].y = y; nclicks++;
+            clicks[nclicks].kind = ACT_CLICK; clicks[nclicks].x = x; clicks[nclicks].y = y;
         } else break;
+        clicks[nclicks].t = t; nclicks++;
         s += n;
         if (*s == ';') s++;
     }
@@ -72,11 +87,25 @@ static void do_clicks(void *window, double t) {
     for (int i = 0; i < nclicks; i++) {
         if (clicks[i].done || t - t0 < clicks[i].t) continue;
         clicks[i].done = 1;
-        if (clicks[i].wheel) {
+        if (clicks[i].kind == ACT_WHEEL) {
             ((send_wheel_t)GAME(0x1012dc760))(window, 0, 0.0f, (float)clicks[i].y, 0);   // SDL_SendMouseWheel
             cjk_log("滚轮 %d", clicks[i].y);
             continue;
         }
+        if (clicks[i].kind == ACT_KEY) {
+            ((set_focus_t)GAME(0x1012dacd0))(window);                  // SDL_SetKeyboardFocus
+            ((send_key_t)GAME(0x1012dac00))(1, clicks[i].x);           // SDL_SendKeyboardKey 按下
+            ((send_key_t)GAME(0x1012dac00))(0, clicks[i].x);           // 松开
+            cjk_log("按键 %d", clicks[i].x);
+            continue;
+        }
+        if (clicks[i].kind == ACT_TEXT) {
+            ((set_focus_t)GAME(0x1012dacd0))(window);
+            ((send_text_t)GAME(0x1012db190))(clicks[i].text);          // SDL_SendKeyboardText
+            cjk_log("打字 %s", clicks[i].text);
+            continue;
+        }
+        if (clicks[i].kind == ACT_SHOT) { shot_now = 1; continue; }
         motion(window, 0, 0, clicks[i].x, clicks[i].y);
         button(window, 0, 1, 1);    // 按下左键
         button(window, 0, 0, 1);    // 松开
@@ -88,8 +117,9 @@ static void my_swap(void *window) {
     cjk_tick();
     double t = now_s();
     do_clicks(window, t);
-    if (shot_dir && t - last_shot >= 10.0) {
+    if (shot_dir && (shot_now || (shot_every > 0 && t - last_shot >= shot_every))) {
         last_shot = t;
+        shot_now = 0;
         int w = 0, h = 0;
         sdl_drawable_size(window, &w, &h);
         if (w > 0 && h > 0 && w <= 8192 && h <= 8192) {
@@ -117,6 +147,7 @@ static void my_swap(void *window) {
 
 int shot_install(void) {
     shot_dir = getenv("EU4CJK_SHOTS");
+    if (getenv("EU4CJK_SHOT_EVERY")) shot_every = atof(getenv("EU4CJK_SHOT_EVERY"));
     t0 = now_s();
     parse_clicks();
     sdl_drawable_size = (void *)GAME(0x1012ca130);        // _SDL_GL_GetDrawableSize

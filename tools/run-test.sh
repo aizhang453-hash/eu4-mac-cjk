@@ -3,6 +3,8 @@
 # 用法: tools/run-test.sh [秒数] [游戏参数...]   到时间自动关游戏 (默认 60 秒)
 #       例: tools/run-test.sh 150 -start_tag=FRA   (直接开一局, 当法国)
 #       EU4CJK_NO_INJECT=1 tools/run-test.sh ...  用装进游戏里的插件 (tools/install.sh 装的), 不另外注入
+#       动作 (EU4CJK_CLICKS, 用 ; 隔开, 秒数从插件加载算起): "60:642,740" 点鼠标; "70:w-5" 滚轮; "75:k58" 按键 (SDL 扫描码, F1=58);
+#             "80:tevent flavor_fra.3105" 打字; "82:s" 马上截一张。EU4CJK_SHOT_EVERY=0 不定时截图。
 #       模拟点鼠标: EU4CJK_CLICKS="70:642,740" tools/run-test.sh ...  (第 70 秒点窗口里的 (642,740); "75:w-5" = 第 75 秒滚轮往下 5 格)
 cd "$(dirname "$0")/.." || exit 1
 G="$HOME/Library/Application Support/Steam/steamapps/common/Europa Universalis IV"
