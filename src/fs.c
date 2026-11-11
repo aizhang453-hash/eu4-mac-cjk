@@ -98,6 +98,34 @@ static int bad_byte(unsigned char b) {          // EU4dll: 这些字节不能直
     return memchr(bad, b, sizeof bad) != NULL;
 }
 
+// 一个字 (Unicode) 换成游戏的写法, 返回写了几个字节 (1 或 3)
+static int put_game(unsigned char *out, unsigned cp) {
+    int b = ucs_to_cp1252(cp);
+    if (b >= 0) { out[0] = (unsigned char)b; return 1; }
+    if (cp > 0xFFFF) cp = 0x2026;                 // 太大的字 (表情符号之类) 放不下
+    if (cp > 0x100 && cp < 0xA00) cp += 0xE000;
+    unsigned char hi = cp >> 8, lo = cp & 0xFF, esc = 0x10;
+    if (bad_byte(hi)) esc += 2;
+    if (bad_byte(lo)) esc += 1;
+    if (esc == 0x11 || esc == 0x13) lo += 14;
+    if (esc == 0x12 || esc == 0x13) hi -= 9;
+    out[0] = esc; out[1] = lo; out[2] = hi;
+    return 3;
+}
+
+// 一串 UTF-8 (输入法打的字) 换成游戏的写法, 返回长度 (不是合法 UTF-8 的字节跳过)
+size_t cjk_utf8_to_game(const char *in, unsigned char *out, size_t cap) {
+    const unsigned char *s = (const unsigned char *)in;
+    size_t o = 0;
+    while (*s && o + 3 < cap) {
+        unsigned cp; int n = get_utf8(s, &cp);
+        if (!n) { s++; continue; }
+        s += n;
+        o += put_game(out + o, cp);
+    }
+    return o;
+}
+
 // 名字里有 0x100 以上的字 (汉字等) 才换, 换好写回 name (缓冲区 cap 字节), 返回新长度; 不换返回 -1
 static int to_game(char *name, size_t len, size_t cap) {
     const unsigned char *s = (const unsigned char *)name;
@@ -114,16 +142,7 @@ static int to_game(char *name, size_t len, size_t cap) {
     for (size_t i = 0; i < len && o + 3 < sizeof out; ) {
         unsigned cp; int n = get_utf8(s + i, &cp);
         i += n;
-        int b = ucs_to_cp1252(cp);
-        if (b >= 0) { out[o++] = (unsigned char)b; continue; }
-        if (cp > 0xFFFF) cp = 0x2026;             // 太大的字 (表情符号之类) 放不下
-        if (cp > 0x100 && cp < 0xA00) cp += 0xE000;
-        unsigned char hi = cp >> 8, lo = cp & 0xFF, esc = 0x10;
-        if (bad_byte(hi)) esc += 2;
-        if (bad_byte(lo)) esc += 1;
-        if (esc == 0x11 || esc == 0x13) lo += 14;
-        if (esc == 0x12 || esc == 0x13) hi -= 9;
-        out[o++] = esc; out[o++] = lo; out[o++] = hi;
+        o += put_game(out + o, cp);
     }
     if (o + 1 > cap) return -1;
     memcpy(name, out, o);

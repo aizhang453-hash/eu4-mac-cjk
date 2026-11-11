@@ -346,3 +346,14 @@ _\name\()_ret: .quad 0
 .endm
 SKIP_AT_END cjk_grs_end, r15
 SKIP_AT_END cjk_garrsa_end, r12
+
+# ---- 收到输入法 (SDL_TEXTINPUT) 的文字: 交给 cjk_textin (input.c), 然后去处理下一个事件 ----
+# 原来 0x101407de1 开始: 只取第一个字。r15 = 键盘, [rbp-0x70] = 事件处理, 文字在 [rbp-0x5c]
+.globl _cjk_textin_stub
+_cjk_textin_stub:
+    lea     rdi, [rbp - 0x5c]
+    mov     rsi, r15
+    mov     edx, dword ptr [rbp - 0x54]
+    mov     rcx, qword ptr [rbp - 0x70]
+    call    _cjk_textin
+    jmp     qword ptr [rip + _cjk_textin_ret]

@@ -19,6 +19,7 @@ int map_names_install(void);
 void spy_install(void);
 int textbuffer_install(void);
 int remove_special_install(void);
+int input_install(void);
 int font_glyph_count(void);
 
 static FILE *g_log;
@@ -93,5 +94,6 @@ static void cjk_init(void) {
     cjk_log("地图名字 (大写、插空格): %d", map_names_install());
     cjk_log("文字框切行: %d", textbuffer_install());
     cjk_log("去特殊字符 (存档名): %d", remove_special_install());
+    cjk_log("打字: %d", input_install());
     spy_install();
 }
