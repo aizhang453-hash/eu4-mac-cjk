@@ -1,5 +1,7 @@
 // 插件入口: 游戏一启动就先跑这里。
 #include <mach-o/dyld.h>
+#include <dlfcn.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -54,11 +56,18 @@ static void on_exit_log(void) {
 __attribute__((constructor))
 static void cjk_init(void) {
     if (!is_eu4()) return;               // 别的程序 (比如启动器) 加载了也什么都不做
+    // 装在游戏里的一份 + 测试时用 DYLD_INSERT_LIBRARIES 另外指定的一份, 只让指定的那份干活
+    Dl_info me;
+    const char *inject = getenv("DYLD_INSERT_LIBRARIES");
+    if (inject && strstr(inject, "libeu4cjk") && dladdr((void *)cjk_init, &me) && me.dli_fname && !strstr(inject, me.dli_fname))
+        return;
     const char *home = getenv("HOME");
     char logpath[4096];
     const char *custom = getenv("EU4CJK_LOG");
     if (custom) snprintf(logpath, sizeof logpath, "%s", custom);
     else snprintf(logpath, sizeof logpath, "%s/Library/Logs/eu4-mac-cjk.log", home ? home : "/tmp");
+    struct stat st;
+    if (stat(logpath, &st) == 0 && st.st_size > 2 * 1024 * 1024) unlink(logpath);   // 日志太大就重新开始
     g_log = fopen(logpath, "a");
     time_t now = time(NULL);
     cjk_log("==== eu4-mac-cjk 加载了 %s进程 %d, 父进程 %d", ctime(&now), getpid(), getppid());
@@ -69,6 +78,10 @@ static void cjk_init(void) {
     g_slide = _dyld_get_image_vmaddr_slide(0);
     // 先确认是我们认识的那个版本 (1.37.5): 看一处已知的指令对不对得上
     const uint8_t sig[] = {0x41, 0x81, 0xFE, 0xFF, 0x00, 0x00, 0x00};
+    if (*(uint8_t *)GAME(0x10146cde7) == 0xE9) {
+        cjk_log("已经有一份插件改过了, 这份不动");
+        return;
+    }
     if (!patch_expect(GAME(0x10146cde7), sig, sizeof sig)) {
         cjk_log("游戏版本对不上, 什么都不改");
         return;
