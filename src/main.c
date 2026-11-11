@@ -8,7 +8,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <crt_externs.h>
 #include "hook.h"
 #include "patch.h"
 
@@ -71,8 +70,7 @@ static void cjk_init(void) {
     g_log = fopen(logpath, "a");
     time_t now = time(NULL);
     cjk_log("==== eu4-mac-cjk 加载了 %s进程 %d, 父进程 %d", ctime(&now), getpid(), getppid());
-    char **argv = *_NSGetArgv();
-    for (int i = 0; i < *_NSGetArgc(); i++) cjk_log("  参数 %d: %s", i, argv[i]);
+    // 不记启动参数: 启动器会传 Paradox 账号编号和登录令牌进来
     atexit(on_exit_log);
 
     g_slide = _dyld_get_image_vmaddr_slide(0);
