@@ -5,6 +5,11 @@
 Windows 上显示中文要装 [EU4dll](https://github.com/matanki-saito/EU4dll) (双字节补丁), 它不支持苹果电脑。
 这个项目照着它的做法, 给苹果版游戏写一个插件 (dylib, 苹果电脑上的「dll」)。
 
+另外还有一个苹果版 [eu4dll_mac](https://github.com/PoXiao-zero/eu4dll_mac) (2026 年 5 月起, 功能更多: 拼音搜索、东亚人名姓在前等, 要用终端安装)。
+本项目是另外独立写的, 特点是双击就能安装, 在 Steam 版上试过。**两个只装一个。**
+
+Steam 创意工坊: https://steamcommunity.com/sharedfiles/filedetails/?id=3838140278
+
 **已经能用了:** 主菜单、进游戏以后的界面、提示框、地图上的国名省名都能显示中文。
 
 ![地图](docs/map.jpg)
