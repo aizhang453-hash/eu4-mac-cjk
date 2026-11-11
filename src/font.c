@@ -1,6 +1,7 @@
 // 字体: 让游戏收下 0x100 以上的字 (汉字), 存在我们自己的表里。
 // 我们的表挂在游戏字形表的第 0x10 格 (0x10 是控制字符, 本来就空着; 也是中文模组的转义字节)。
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include "hook.h"
 #include "patch.h"
@@ -10,6 +11,7 @@ void cjk_log(const char *fmt, ...);
 #define FONT_GLYPHS   0xe8            // CBitmapFont 里 256 格字形表的位置
 #define SIDE_SLOT     0x10
 #define SIDE_GLYPHS   0x10000
+typedef void *(*cstring_add_char_t)(void *self, char c);
 
 typedef struct { int16_t x, y, w, h, xoff, yoff, xadv; uint8_t kerning, pad; } Glyph;  // 跟游戏的一样, 16 字节
 
@@ -17,7 +19,11 @@ uintptr_t cjk_parse_ret_small, cjk_parse_ret_loop;
 void cjk_parse_stub(void);
 static int glyph_count;
 
+int date_install(void);
+
 void cjk_add_glyph(uint8_t *font, int id, int x, int y, int w, int h, int xoff, int yoff, int xadv) {
+    if (glyph_count == 0)     // 有中文字体才改日期格式 (没开中文模组时「年」「日」那两格是空的, 会变成 1444November11)
+        cjk_log("日期格式: %d", date_install());
     void ***slot = (void ***)(font + FONT_GLYPHS + SIDE_SLOT * 8);
     void **side = *slot;
     if (!side) {
@@ -69,8 +75,85 @@ int date_install(void) {
     return patch_write(a, new_fmt, sizeof new_fmt);
 }
 
+// ---- CString 的读法 (跟 libc++ 的 string 一样: 第一个字节最低位 1 = 长字符串) ----
+static uint8_t *cstr_data(uint8_t *s, size_t *n) {
+    if (s[0] & 1) { *n = *(size_t *)(s + 8); return *(uint8_t **)(s + 0x10); }
+    *n = s[0] >> 1; return s + 1;
+}
+static int is_esc(uint8_t c) { return c >= 0x10 && c <= 0x13; }
+
+// ---- CString::ToUpper / ToLower 整个换掉: 汉字 (转义 + 两个字节) 跳过, 别的照原来的做法 ----
+// 地图上的国名省名会先转大写, 原来把汉字的后两个字节也「转大写」了, 变成别的字 (EU4dll map_adjustment 也取消了这个)
+int __toupper(int), __tolower(int);
+static void cstr_case(uint8_t *s, int upper) {
+    size_t n; uint8_t *p = cstr_data(s, &n);
+    for (size_t i = 0; i < n && p[i]; ) {
+        if (is_esc(p[i])) { i += 3; continue; }
+        int c = (signed char)p[i];
+        p[i] = (uint8_t)(upper ? __toupper(c) : __tolower(c));
+        i++;
+    }
+}
+static void my_cstring_toupper(uint8_t *s) { cstr_case(s, 1); }
+static void my_cstring_tolower(uint8_t *s) { cstr_case(s, 0); }
+
+// ---- 地图名字字和字之间插空格 (CGenerateNamesWork::AddNameArea 里): 一个汉字的三个字节当一个整体 ----
+typedef void *(*cstring_add_cstr_t)(void *self, const void *other);
+void cjk_spaced(void *dst, uint8_t *src, void *spaces) {
+    cstring_add_char_t add = (cstring_add_char_t)GAME(0x1018659d2);   // CString::operator+=(char)
+    cstring_add_cstr_t addstr = (cstring_add_cstr_t)GAME(0x101865952); // CString::operator+=(CString const&)
+    size_t n; uint8_t *p = cstr_data(src, &n);
+    for (size_t i = 0; i < n; ) {
+        size_t unit = (is_esc(p[i]) && i + 2 < n) ? 3 : 1;
+        for (size_t k = 0; k < unit; k++) add(dst, (char)p[i + k]);
+        i += unit;
+        if (i < n) addstr(dst, spaces);
+    }
+}
+// ---- 文字框 (CTextBuffer, 提示框用它按行切) 算「一行放得下几个字节」: 落在汉字中间就退到这个汉字前面 ----
+// 原来切出来会把汉字拆开, 提示框里出现「效蜊s」这种怪字 (EU4dll tooltip_and_button 管的就是这一块)
+typedef int (*glcs_t)(void *self, uint8_t *cstr);
+static glcs_t orig_glcs;
+static int my_glcs(void *self, uint8_t *cstr) {
+    int n = orig_glcs(self, cstr);
+    size_t len; uint8_t *p = cstr_data(cstr, &len);
+    if (n <= 0 || (size_t)n >= len) return n;
+    size_t pos = 0;
+    while (pos < (size_t)n) {
+        size_t unit = (is_esc(p[pos]) && pos + 2 < len) ? 3 : 1;
+        if (pos + unit > (size_t)n) break;
+        pos += unit;
+    }
+    if (pos == 0) pos = (is_esc(p[0]) && len >= 3) ? 3 : 1;    // 一个字都放不下也至少放一个, 不然会一直切不动
+    return (int)pos;
+}
+
+extern void cjk_ana_space(void);
+extern uintptr_t cjk_ana_space_ret;
+
+int textbuffer_install(void) {
+    const uint8_t head[] = {0x55, 0x48, 0x89, 0xE5, 0x41, 0x57};   // push rbp; mov rbp,rsp; push r15
+    uintptr_t a = GAME(0x101500a8e);                                // CTextBuffer::GetLineCharSize
+    if (!patch_expect(a, head, 6)) return -1;
+    orig_glcs = (glcs_t)hook_tramp(a, 6);
+    return (orig_glcs && hook_jmp(a, 6, (void *)my_glcs) == 0) ? 0 : -2;
+}
+
+int map_names_install(void) {
+    // 转大写、转小写: 开头 push rbp; mov rbp,rsp; push r15 (6 字节)
+    const uint8_t head[] = {0x55, 0x48, 0x89, 0xE5, 0x41, 0x57};
+    uintptr_t up = GAME(0x101866f48), low = GAME(0x101866ee2);
+    if (!patch_expect(up, head, 6) || !patch_expect(low, head, 6)) return -1;
+    if (hook_jmp(up, 6, (void *)my_cstring_toupper) || hook_jmp(low, 6, (void *)my_cstring_tolower)) return -2;
+    // 插空格: 0x100e0d4bd 是 lea rdi, [rbp-0x90] (7 字节), 一直到 0x100e0d566 整段换掉
+    const uint8_t lea[] = {0x48, 0x8D, 0xBD, 0x70, 0xFF, 0xFF, 0xFF};
+    uintptr_t sp = GAME(0x100e0d4bd);
+    if (!patch_expect(sp, lea, 7)) return -3;
+    cjk_ana_space_ret = GAME(0x100e0d566);
+    return hook_jmp(sp, 7, (void *)cjk_ana_space) ? -4 : 0;
+}
+
 // ---- 读字的地方 (stubs.S 里的 SITE_A 等) ----
-typedef void *(*cstring_add_char_t)(void *self, char c);
 
 void cjk_append2(void *word, const uint8_t *p) {      // 单词 += 汉字的后两个字节
     cstring_add_char_t add = (cstring_add_char_t)GAME(0x1018659d2);   // CString::operator+=(char)
@@ -81,11 +164,11 @@ void cjk_append2(void *word, const uint8_t *p) {      // 单词 += 汉字的后�
 #define STUB(n) extern void cjk_##n(void); extern uintptr_t cjk_##n##_ret;
 STUB(rtt1) STUB(rtt2) STUB(rts1) STUB(rts2) STUB(gh) STUB(gw)
 STUB(fvb1) STUB(fvb2) STUB(gars) STUB(grs) STUB(garrsa)
-STUB(ana) STUB(ann) STUB(curve)
+STUB(ana) STUB(ann) STUB(curve) STUB(r3d1) STUB(r3d2)
 extern uintptr_t cjk_ptext;
 
 // kind: 0 = movzx eax,[rax] + 查表; 1 = 只有查表; 2 = mov rcx,r14 + 查表; 3 = movzx + mov rcx,[rbp-0x1128] + 查表;
-//       4 = movzx + mov r15,[r12+8*rax] (CurveText)
+//       4 = movzx + mov r15,[r12+8*rax] (CurveText); 5 = movzx + mov rcx,[rbp-0xf0] + 查表 (Render3d)
 static const struct { const char *name; uintptr_t at; int len, kind; void (*stub)(void); uintptr_t *ret; uintptr_t back; } sites[] = {
     {"RenderToTexture 排版", 0x10146da2b, 11, 0, cjk_rtt1,   &cjk_rtt1_ret,   0x10146da36},
     {"RenderToTexture 画",   0x10146f8f3, 11, 0, cjk_rtt2,   &cjk_rtt2_ret,   0x10146f8fe},
@@ -101,15 +184,30 @@ static const struct { const char *name; uintptr_t at; int len, kind; void (*stub
     {"地图名字 AddNameArea",   0x100e0d88e, 11, 0, cjk_ana,   &cjk_ana_ret,   0x100e0d899},
     {"地图名字 AddNudgedNames",0x100e0f438, 11, 0, cjk_ann,   &cjk_ann_ret,   0x100e0f443},
     {"地图名字 CurveText",     0x100e0e875,  7, 4, cjk_curve, &cjk_curve_ret, 0x100e0e87c},
+    {"Render3d 排版",          0x1014736e5, 18, 5, cjk_r3d1,  &cjk_r3d1_ret,  0x1014736f7},
+    {"Render3d 画",            0x101473d10, 11, 0, cjk_r3d2,  &cjk_r3d2_ret,  0x101473d1b},
 };
 
 static int lookup_ok(const uint8_t *p) {    // mov r64, [base + 8*idx + 0xe8]
     return (p[0] & 0xF0) == 0x40 && p[1] == 0x8B && p[4] == 0xE8 && !p[5] && !p[6] && !p[7];
 }
 
+// 循环结尾 (stubs.S 的 SKIP_AT_END): mov ebx, [rbp-0xb4] (8B 9D 4C FF FF FF) ; inc ebx (FF C3)
+extern void cjk_grs_end(void), cjk_garrsa_end(void);
+extern uintptr_t cjk_grs_end_ret, cjk_garrsa_end_ret;
+static int loop_end_install(void) {
+    const uint8_t want[] = {0x8B, 0x9D, 0x4C, 0xFF, 0xFF, 0xFF, 0xFF, 0xC3};
+    uintptr_t a = GAME(0x101475bc7), b = GAME(0x10147671f);
+    if (!patch_expect(a, want, 8) || !patch_expect(b, want, 8)) return -1;
+    cjk_grs_end_ret = GAME(0x101475bcf);
+    cjk_garrsa_end_ret = GAME(0x101476727);
+    return (hook_jmp(a, 8, (void *)cjk_grs_end) || hook_jmp(b, 8, (void *)cjk_garrsa_end)) ? -2 : 0;
+}
+
 int sites_install(void) {
     cjk_ptext = GAME(0x102155c90);      // RenderToScreen 用的全局 pText
     int bad = 0;
+    if (loop_end_install() != 0) { cjk_log("循环结尾没改上"); bad++; }
     for (size_t i = 0; i < sizeof sites / sizeof sites[0]; i++) {
         const uint8_t *p = (const uint8_t *)GAME(sites[i].at);
         const uint8_t movzx[] = {0x0F, 0xB6, 0x00}, movrcx[] = {0x4C, 0x89, 0xF1},
@@ -120,6 +218,8 @@ int sites_install(void) {
         case 1: ok = lookup_ok(p); break;
         case 2: ok = !memcmp(p, movrcx, 3) && lookup_ok(p + 3); break;
         case 3: ok = !memcmp(p, movzx, 3) && !memcmp(p + 3, ldrcx, 7) && lookup_ok(p + 10); break;
+        case 5: { const uint8_t ld[] = {0x48, 0x8B, 0x8D, 0x10, 0xFF, 0xFF, 0xFF};   // mov rcx, [rbp-0xf0]
+                  ok = !memcmp(p, movzx, 3) && !memcmp(p + 3, ld, 7) && lookup_ok(p + 10); break; }
         default: { const uint8_t ld[] = {0x4D, 0x8B, 0x3C, 0xC4}; ok = !memcmp(p, movzx, 3) && !memcmp(p + 3, ld, 4); break; }
         }
         if (!ok) { cjk_log("对不上, 没改: %s", sites[i].name); bad++; continue; }

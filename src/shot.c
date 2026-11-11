@@ -47,7 +47,8 @@ static void save_png(const char *path, int w, int h, uint8_t *rgba) {
 // ---- 调试用: 模拟点鼠标 (EU4CJK_CLICKS="秒:x,y;秒:x,y", 秒数从插件加载算起, x,y 是窗口里的点) ----
 typedef int (*send_motion_t)(void *window, uint32_t mouse, int relative, int x, int y);
 typedef int (*send_button_t)(void *window, uint32_t mouse, uint8_t state, uint8_t button);
-static struct { double t; int x, y, done; } clicks[32];
+typedef int (*send_wheel_t)(void *window, uint32_t mouse, float x, float y, int direction);
+static struct { double t; int x, y, wheel, done; } clicks[32];
 static int nclicks;
 static double t0;
 
@@ -55,8 +56,11 @@ static void parse_clicks(void) {
     const char *s = getenv("EU4CJK_CLICKS");
     while (s && *s && nclicks < 32) {
         double t; int x, y, n = 0;
-        if (sscanf(s, "%lf:%d,%d%n", &t, &x, &y, &n) != 3) break;
-        clicks[nclicks].t = t; clicks[nclicks].x = x; clicks[nclicks].y = y; nclicks++;
+        if (sscanf(s, "%lf:w%d%n", &t, &y, &n) == 2) {          // 滚轮
+            clicks[nclicks].t = t; clicks[nclicks].wheel = 1; clicks[nclicks].y = y; nclicks++;
+        } else if (sscanf(s, "%lf:%d,%d%n", &t, &x, &y, &n) == 3) {
+            clicks[nclicks].t = t; clicks[nclicks].x = x; clicks[nclicks].y = y; nclicks++;
+        } else break;
         s += n;
         if (*s == ';') s++;
     }
@@ -68,6 +72,11 @@ static void do_clicks(void *window, double t) {
     for (int i = 0; i < nclicks; i++) {
         if (clicks[i].done || t - t0 < clicks[i].t) continue;
         clicks[i].done = 1;
+        if (clicks[i].wheel) {
+            ((send_wheel_t)GAME(0x1012dc760))(window, 0, 0.0f, (float)clicks[i].y, 0);   // SDL_SendMouseWheel
+            cjk_log("滚轮 %d", clicks[i].y);
+            continue;
+        }
         motion(window, 0, 0, clicks[i].x, clicks[i].y);
         button(window, 0, 1, 1);    // 按下左键
         button(window, 0, 0, 1);    // 松开

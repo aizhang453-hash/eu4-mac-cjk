@@ -34,7 +34,7 @@ _cjk_parse_stub:
 
 # ---- 读字的地方: 认出中文模组的转义 (0x10~0x13 + 两个字节 = 一个汉字) ----
 # 进来时 \s1 = 指向当前字的指针; 已经 push \s1, push \s2。
-# base: 字体; dst: 原来放字形指针的寄存器; idx: 下标 (汉字要多加 2); ret: 跳回去的地址 (原来的 test 那条)
+# base: 字体; dst: 原来放字形指针的寄存器; idx: 下标 (汉字要多加 2; 写 none 就不加, 由循环结尾的 SKIP_AT_END 来加); ret: 跳回去的地址 (原来的 test 那条)
 # seteax: 原来 eax 里是这个字 (就照样放字 / 汉字编号)
 # layout: 排版用 (把汉字当成可以断行的地方: 用高度为 0 的副本字形)
 # extra: 汉字时还要做的事 (把后两个字节也放进单词缓冲区)
@@ -69,7 +69,10 @@ _cjk_parse_stub:
     cmp     \s2d, 0x98F
     ja      85f
     mov     \s2d, 0x2026
-85: add     \idx, 2
+85:
+    .ifnc \idx,none
+    add     \idx, 2
+    .endif
     \extra
     .if \seteax
     mov     eax, \s2d
@@ -107,12 +110,15 @@ _\name\()_ret: .quad 0
 .endm
 
 SITE_A cjk_rtt2,   r14, r10, r12d, 0
-SITE_A cjk_gh,     rbx, rax, r13d, 1
-SITE_A cjk_fvb1,   r15, r13, r12d, 0
+# 量大小的函数用真的字形 (不能用高度 0 的副本: 地图名字会量成高度 0 不画;
+# 换行时游戏会把「空格」那个字节换成换行符, 用副本就会把汉字的一个字节换掉, 提示框里出怪字)
+SITE_A cjk_gh,     rbx, rax, r13d, 0
 SITE_A cjk_fvb2,   r15, rax, ebx,  0
-SITE_A cjk_gars,   rcx, r12, r13d, 1, "mov rcx, qword ptr [rbp - 0x1128]"
-SITE_A cjk_grs,    r12, rbx, "dword ptr [rbp - 0xb4]", 1
-SITE_A cjk_garrsa, r13, rbx, "dword ptr [rbp - 0xb4]", 1
+SITE_A cjk_gars,   rcx, r12, r13d, 0, "mov rcx, qword ptr [rbp - 0x1128]"
+# 这两个会把「每个字从第几个字节开始」记进一张表 (换行时从表里挑地方断开), 所以读字时下标不能先加 2,
+# 要等这个字处理完, 在循环结尾 (SKIP_AT_END) 再跳过汉字的后两个字节; 不然断行会断在汉字中间, 出怪字
+SITE_A cjk_grs,    r12, rbx, none, 0
+SITE_A cjk_garrsa, r13, rbx, none, 0
 # 地图上的名字: 数有几个看得见的字 (两处), 沿着弯曲排字 (CurveText, 直接给的字形表)
 SITE_A cjk_ana,    r14, rax, ebx,  0
 SITE_A cjk_ann,    r14, rax, r13d, 0
@@ -186,8 +192,157 @@ _cjk_gw:
     push    r8
     push    r9
     lea     r8, [r14 + r12]
-    CJK_LOOKUP rdi, rbx, r15d, _cjk_gw_ret, r8, r8d, r9, r9d, 0, 1, " "
+    CJK_LOOKUP rdi, rbx, r15d, _cjk_gw_ret, r8, r8d, r9, r9d, 0, 0, " "
 .data
 .globl _cjk_gw_ret
 _cjk_gw_ret: .quad 0
 .text
+
+# Render3d 排版: 跟 RenderToTexture 一样, 单词缓冲区在 [rbp-0x128]; rcx (字体) 后面还要用, 调函数前存起来
+.macro R3D1_EXTRA
+    push    rsi
+    push    rdi
+    push    rcx
+    push    rax
+    lea     rdi, [rbp - 0x128]
+    call    _cjk_append2
+    pop     rax
+    pop     rcx
+    pop     rdi
+    pop     rsi
+.endm
+.globl _cjk_r3d1
+_cjk_r3d1:
+    mov     rcx, qword ptr [rbp - 0xf0]
+    push    rsi
+    push    rdi
+    mov     rsi, rax
+    CJK_LOOKUP rcx, rbx, r15d, _cjk_r3d1_ret, rsi, esi, rdi, edi, 1, 1, R3D1_EXTRA
+.data
+.globl _cjk_r3d1_ret
+_cjk_r3d1_ret: .quad 0
+.text
+
+SITE_A cjk_r3d2, r15, rax, r12d, 0
+
+# 地图名字插空格: 整段换成 cjk_spaced(&结果[rbp-0x128], &名字[rbp-0x90], &空格[rbp-0x220])
+.globl _cjk_ana_space
+_cjk_ana_space:
+    mov     dword ptr [rbp - 0x70], r14d
+    lea     rdi, [rbp - 0x128]
+    lea     rsi, [rbp - 0x90]
+    lea     rdx, [rbp - 0x220]
+    call    _cjk_spaced
+    lea     rbx, [rbp - 0x128]
+    jmp     qword ptr [rip + _cjk_ana_space_ret]
+.data
+.globl _cjk_ana_space_ret
+_cjk_ana_space_ret: .quad 0
+.text
+
+# ---- 调试用的探针: 在游戏代码某处停一下, 把所有寄存器交给 cjk_spy(编号, 寄存器) 记日志, 再接着跑原来的指令 ----
+# 寄存器在内存里的顺序: r15 r14 r13 r12 r11 r10 r9 r8 rdi rsi rbp rbx rdx rcx rax 标志
+.macro SPY id
+.globl _cjk_spy_\id
+_cjk_spy_\id:
+    lea     rsp, [rsp - 128]
+    pushfq
+    push    rax
+    push    rcx
+    push    rdx
+    push    rbx
+    push    rbp
+    push    rsi
+    push    rdi
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     edi, \id
+    mov     rsi, rsp
+    mov     rbx, rsp
+    and     rsp, -16
+    call    _cjk_spy
+    mov     rsp, rbx
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     rdi
+    pop     rsi
+    pop     rbp
+    pop     rbx
+    pop     rdx
+    pop     rcx
+    pop     rax
+    popfq
+    lea     rsp, [rsp + 128]
+    jmp     qword ptr [rip + _cjk_spy_\id\()_cont]
+.data
+.globl _cjk_spy_\id\()_cont
+_cjk_spy_\id\()_cont: .quad 0
+.text
+.endm
+SPY 0
+SPY 1
+SPY 2
+SPY 3
+SPY 4
+SPY 5
+
+# FillVertexBuffer 第一遍: 每个字先 "单词[rbp-0x1000] += 这个字", 汉字的后两个字节也要放进去
+# (第二遍是照拼好的整行 [rbp-0x1048] 生成方块; 少了这两个字节, 地图上的名字只剩一两个字)
+.macro FVB1_EXTRA
+    push    rsi
+    push    rdi
+    lea     rdi, [rbp - 0x1000]
+    call    _cjk_append2
+    pop     rdi
+    pop     rsi
+.endm
+.globl _cjk_fvb1
+_cjk_fvb1:
+    push    rsi
+    push    rdi
+    mov     rsi, rax
+    CJK_LOOKUP r15, r13, r12d, _cjk_fvb1_ret, rsi, esi, rdi, edi, 1, 0, FVB1_EXTRA
+.data
+.globl _cjk_fvb1_ret
+_cjk_fvb1_ret: .quad 0
+.text
+
+# 循环结尾: 原来是 mov ebx, [rbp-0xb4] ; inc ebx。当前这个字是汉字的话多加 2 (cstr: 字符串 CString 在哪个寄存器)
+.macro SKIP_AT_END name, cstr
+.globl _\name
+_\name:
+    mov     ebx, dword ptr [rbp - 0xb4]
+    push    rax
+    mov     rax, \cstr
+    test    byte ptr [rax], 1
+    jz      1f
+    mov     rax, qword ptr [rax + 0x10]
+    jmp     2f
+1:  inc     rax
+2:  movzx   eax, byte ptr [rax + rbx]
+    sub     eax, 0x10
+    cmp     eax, 3
+    ja      3f
+    add     ebx, 2
+3:  pop     rax
+    inc     ebx
+    jmp     qword ptr [rip + _\name\()_ret]
+.data
+.globl _\name\()_ret
+_\name\()_ret: .quad 0
+.text
+.endm
+SKIP_AT_END cjk_grs_end, r15
+SKIP_AT_END cjk_garrsa_end, r12

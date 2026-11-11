@@ -14,7 +14,9 @@ int shot_install(void);
 int font_install(void);
 int sites_install(void);
 int texture_limit_install(void);
-int date_install(void);
+int map_names_install(void);
+void spy_install(void);
+int textbuffer_install(void);
 int font_glyph_count(void);
 
 static FILE *g_log;
@@ -76,5 +78,7 @@ static void cjk_init(void) {
     cjk_log("字体: %d", font_install());
     cjk_log("读字的地方: %d 处没改", sites_install());
     cjk_log("图片大小上限: %d", texture_limit_install());
-    cjk_log("日期格式: %d", date_install());
+    cjk_log("地图名字 (大写、插空格): %d", map_names_install());
+    cjk_log("文字框切行: %d", textbuffer_install());
+    spy_install();
 }
